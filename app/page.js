@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { Check, ChevronLeft, ChevronRight, Gem, Receipt, Pencil, Plus, X, Hammer, Box } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, Gem, Receipt, Pencil, Plus, X, Hammer, Box, Trash2, Save } from "lucide-react";
 
 // ---- Design tokens: blocky / pixel-art, inspired by sandbox-mining games ----
 const T = {
@@ -88,6 +88,12 @@ export default function ChoreDashboard() {
   const [editingChores, setEditingChores] = useState(false);
   const [newChoreLabel, setNewChoreLabel] = useState("");
   const [saving, setSaving] = useState(false);
+  const [editingEntryId, setEditingEntryId] = useState(null);
+  const [editAmount, setEditAmount] = useState("");
+  const [editReason, setEditReason] = useState("");
+  const [adjustingBoy, setAdjustingBoy] = useState(null);
+  const [adjustAmount, setAdjustAmount] = useState("");
+  const [adjustReason, setAdjustReason] = useState("");
 
   useEffect(() => {
     (async () => {
@@ -210,6 +216,11 @@ export default function ChoreDashboard() {
   function payOut(boyId) {
     const balance = balances[boyId] || 0;
     if (balance <= 0) return;
+    const boy = boys.find((b) => b.id === boyId);
+    const ok = window.confirm(
+      `Pay out $${balance.toFixed(2)} to ${boy?.name || "this boy"} and reset their balance to $0?`
+    );
+    if (!ok) return;
     const nextLedger = [
       ...ledger,
       {
@@ -223,6 +234,58 @@ export default function ChoreDashboard() {
       },
     ];
     saveAll({ ledger: nextLedger });
+  }
+
+  function startEditEntry(entry) {
+    setEditingEntryId(entry.id);
+    setEditAmount(String(entry.amount));
+    setEditReason(entry.reason);
+  }
+
+  function cancelEditEntry() {
+    setEditingEntryId(null);
+    setEditAmount("");
+    setEditReason("");
+  }
+
+  function saveEditEntry(id) {
+    const amount = Number(editAmount);
+    if (isNaN(amount) || !editReason.trim()) return;
+    const nextLedger = ledger.map((e) =>
+      e.id === id ? { ...e, amount, reason: editReason.trim() } : e
+    );
+    saveAll({ ledger: nextLedger });
+    cancelEditEntry();
+  }
+
+  function deleteEntry(entry) {
+    const ok = window.confirm(
+      `Delete this entry (${entry.amount >= 0 ? "+" : "-"}$${Math.abs(entry.amount).toFixed(2)} — ${entry.reason})? This will update the balance.`
+    );
+    if (!ok) return;
+    const nextLedger = ledger.filter((e) => e.id !== entry.id);
+    saveAll({ ledger: nextLedger });
+  }
+
+  function submitAdjustment(boyId) {
+    const amount = Number(adjustAmount);
+    if (isNaN(amount) || amount === 0 || !adjustReason.trim()) return;
+    const nextLedger = [
+      ...ledger,
+      {
+        id: uid(),
+        date: todayKey(),
+        boyId,
+        amount,
+        reason: adjustReason.trim(),
+        tag: "manual",
+        timestamp: new Date().toISOString(),
+      },
+    ];
+    saveAll({ ledger: nextLedger });
+    setAdjustingBoy(null);
+    setAdjustAmount("");
+    setAdjustReason("");
   }
 
   function renameBoy(boyId, name) {
@@ -477,6 +540,65 @@ export default function ChoreDashboard() {
                         PAY OUT
                       </button>
                     </div>
+
+                    <div className="mt-2">
+                      {adjustingBoy === boy.id ? (
+                        <div className="p-3 space-y-2" style={pixelBorder(T.stoneDark, T.stoneLight, "#222220", 2)}>
+                          <div className="flex gap-2">
+                            <input
+                              type="number"
+                              step="0.01"
+                              value={adjustAmount}
+                              onChange={(e) => setAdjustAmount(e.target.value)}
+                              placeholder="+2 or -2"
+                              className="w-24 px-2 py-1 text-sm"
+                              style={{ background: T.stoneDark, border: `2px solid ${T.stoneLight}`, color: T.cream }}
+                            />
+                            <input
+                              value={adjustReason}
+                              onChange={(e) => setAdjustReason(e.target.value)}
+                              placeholder="Reason (required)"
+                              className="flex-1 px-2 py-1 text-sm"
+                              style={{ background: T.stoneDark, border: `2px solid ${T.stoneLight}`, color: T.cream }}
+                            />
+                          </div>
+                          <div className="flex gap-2 justify-end">
+                            <button
+                              onClick={() => {
+                                setAdjustingBoy(null);
+                                setAdjustAmount("");
+                                setAdjustReason("");
+                              }}
+                              className="px-2 py-1 text-xs"
+                              style={{ color: T.muted }}
+                            >
+                              CANCEL
+                            </button>
+                            <button
+                              onClick={() => submitAdjustment(boy.id)}
+                              disabled={!adjustAmount || !adjustReason.trim()}
+                              className="px-3 py-1 flex items-center gap-1 text-xs"
+                              style={{
+                                ...pixelBorder(T.gold, T.cream, T.goldDark, 2),
+                                color: T.stoneDark,
+                                fontWeight: 800,
+                                opacity: !adjustAmount || !adjustReason.trim() ? 0.5 : 1,
+                              }}
+                            >
+                              <Save size={12} /> SAVE
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => setAdjustingBoy(boy.id)}
+                          className="w-full text-center text-xs py-1.5"
+                          style={{ color: T.muted, fontWeight: 700 }}
+                        >
+                          + / − ADJUST BALANCE MANUALLY
+                        </button>
+                      )}
+                    </div>
                   </div>
                 );
               })}
@@ -545,27 +667,80 @@ export default function ChoreDashboard() {
                 {sortedLedger.map((e) => {
                   const boy = boys.find((b) => b.id === e.boyId);
                   const positive = e.amount >= 0;
+                  const isEditing = editingEntryId === e.id;
                   return (
                     <div
                       key={e.id}
-                      className="flex items-center justify-between px-3 py-2"
+                      className="px-3 py-2"
                       style={{ ...pixelBorder(T.stoneDark, "#222220", "#222220", 1), fontSize: "0.82rem" }}
                     >
-                      <div className="flex items-center gap-3">
-                        <span style={{ color: T.muted, width: 90, display: "inline-block" }}>
-                          {prettyDate(e.date)}
-                        </span>
-                        <span style={{ color: boy?.accent || T.cream, fontWeight: 700 }}>{boy?.name || "—"}</span>
-                        <span style={{ color: T.muted }}>{e.reason}</span>
-                      </div>
-                      <span
-                        className="flex items-center gap-1"
-                        style={{ fontWeight: 800, color: positive ? T.emerald : T.redstone }}
-                      >
-                        {positive ? "+" : "−"}
-                        <Gem size={12} />
-                        {Math.abs(e.amount).toFixed(2)}
-                      </span>
+                      {isEditing ? (
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-3">
+                            <span style={{ color: T.muted, width: 90, display: "inline-block" }}>
+                              {prettyDate(e.date)}
+                            </span>
+                            <span style={{ color: boy?.accent || T.cream, fontWeight: 700 }}>
+                              {boy?.name || "—"}
+                            </span>
+                          </div>
+                          <div className="flex gap-2">
+                            <input
+                              type="number"
+                              step="0.01"
+                              value={editAmount}
+                              onChange={(ev) => setEditAmount(ev.target.value)}
+                              className="w-24 px-2 py-1 text-sm"
+                              style={{ background: T.stoneDark, border: `2px solid ${T.stoneLight}`, color: T.cream }}
+                            />
+                            <input
+                              value={editReason}
+                              onChange={(ev) => setEditReason(ev.target.value)}
+                              placeholder="Reason"
+                              className="flex-1 px-2 py-1 text-sm"
+                              style={{ background: T.stoneDark, border: `2px solid ${T.stoneLight}`, color: T.cream }}
+                            />
+                          </div>
+                          <div className="flex gap-2 justify-end">
+                            <button onClick={cancelEditEntry} className="px-2 py-1 text-xs" style={{ color: T.muted }}>
+                              CANCEL
+                            </button>
+                            <button
+                              onClick={() => saveEditEntry(e.id)}
+                              className="px-3 py-1 flex items-center gap-1 text-xs"
+                              style={{ ...pixelBorder(T.gold, T.cream, T.goldDark, 2), color: T.stoneDark, fontWeight: 800 }}
+                            >
+                              <Save size={12} /> SAVE
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <span style={{ color: T.muted, width: 90, display: "inline-block" }}>
+                              {prettyDate(e.date)}
+                            </span>
+                            <span style={{ color: boy?.accent || T.cream, fontWeight: 700 }}>{boy?.name || "—"}</span>
+                            <span style={{ color: T.muted }}>{e.reason}</span>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <span
+                              className="flex items-center gap-1"
+                              style={{ fontWeight: 800, color: positive ? T.emerald : T.redstone }}
+                            >
+                              {positive ? "+" : "−"}
+                              <Gem size={12} />
+                              {Math.abs(e.amount).toFixed(2)}
+                            </span>
+                            <button onClick={() => startEditEntry(e)} aria-label="Edit entry">
+                              <Pencil size={13} color={T.muted} />
+                            </button>
+                            <button onClick={() => deleteEntry(e)} aria-label="Delete entry">
+                              <Trash2 size={13} color={T.redstone} />
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
