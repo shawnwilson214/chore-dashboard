@@ -74,6 +74,16 @@ function addDays(key, n) {
 function uid() {
   return Math.random().toString(36).slice(2, 10);
 }
+function formatTimestamp(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return d.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
 
 export default function ChoreDashboard() {
   const [loaded, setLoaded] = useState(false);
@@ -94,6 +104,10 @@ export default function ChoreDashboard() {
   const [adjustingBoy, setAdjustingBoy] = useState(null);
   const [adjustAmount, setAdjustAmount] = useState("");
   const [adjustReason, setAdjustReason] = useState("");
+  const [sideQuests, setSideQuests] = useState([]);
+  const [showSideQuestForm, setShowSideQuestForm] = useState(false);
+  const [newQuestLabel, setNewQuestLabel] = useState("");
+  const [newQuestValue, setNewQuestValue] = useState("");
 
   useEffect(() => {
     (async () => {
@@ -106,6 +120,7 @@ export default function ChoreDashboard() {
             setChores(data.chores || DEFAULT_CHORES);
             setCompletions(data.completions || {});
             setLedger(data.ledger || []);
+            setSideQuests(data.sideQuests || []);
           }
         }
       } catch (e) {
@@ -140,14 +155,16 @@ export default function ChoreDashboard() {
         chores: patch.chores ?? chores,
         completions: patch.completions ?? completions,
         ledger: patch.ledger ?? ledger,
+        sideQuests: patch.sideQuests ?? sideQuests,
       };
       if (patch.boys) setBoys(patch.boys);
       if (patch.chores) setChores(patch.chores);
       if (patch.completions) setCompletions(patch.completions);
       if (patch.ledger) setLedger(patch.ledger);
+      if (patch.sideQuests) setSideQuests(patch.sideQuests);
       persist(next);
     },
-    [boys, chores, completions, ledger, persist]
+    [boys, chores, completions, ledger, sideQuests, persist]
   );
 
   const balances = useMemo(() => {
@@ -183,7 +200,7 @@ export default function ChoreDashboard() {
   function toggleChore(boyId, choreId) {
     const key = `${selectedDate}|${boyId}`;
     const current = { ...(completions[key] || {}) };
-    current[choreId] = !current[choreId];
+    current[choreId] = current[choreId] ? null : new Date().toISOString();
 
     const allDone = chores.length > 0 && chores.every((c) => current[c.id]);
     const nextCompletions = { ...completions, [key]: current };
@@ -291,6 +308,49 @@ export default function ChoreDashboard() {
   function renameBoy(boyId, name) {
     const nextBoys = boys.map((b) => (b.id === boyId ? { ...b, name } : b));
     saveAll({ boys: nextBoys });
+  }
+
+  function addSideQuest() {
+    const label = newQuestLabel.trim();
+    const value = Number(newQuestValue);
+    if (!label || isNaN(value) || value <= 0) return;
+    const next = [...sideQuests, { id: uid(), label, value, claimedBy: null }];
+    setNewQuestLabel("");
+    setNewQuestValue("");
+    setShowSideQuestForm(false);
+    saveAll({ sideQuests: next });
+  }
+
+  function claimSideQuest(id, boyId) {
+    const next = sideQuests.map((q) => (q.id === id ? { ...q, claimedBy: boyId } : q));
+    saveAll({ sideQuests: next });
+  }
+
+  function releaseSideQuest(id) {
+    const next = sideQuests.map((q) => (q.id === id ? { ...q, claimedBy: null } : q));
+    saveAll({ sideQuests: next });
+  }
+
+  function removeSideQuest(id) {
+    const next = sideQuests.filter((q) => q.id !== id);
+    saveAll({ sideQuests: next });
+  }
+
+  function completeSideQuest(quest) {
+    const nextLedger = [
+      ...ledger,
+      {
+        id: uid(),
+        date: todayKey(),
+        boyId: quest.claimedBy,
+        amount: quest.value,
+        reason: `Side quest: ${quest.label}`,
+        tag: "sidequest",
+        timestamp: new Date().toISOString(),
+      },
+    ];
+    const nextSideQuests = sideQuests.filter((q) => q.id !== quest.id);
+    saveAll({ ledger: nextLedger, sideQuests: nextSideQuests });
   }
 
   function addChore() {
@@ -485,14 +545,63 @@ export default function ChoreDashboard() {
                                 fontWeight: 600,
                                 textDecoration: checked ? "line-through" : "none",
                                 color: checked ? T.muted : T.cream,
+                                flex: 1,
                               }}
                             >
                               {chore.label}
                             </span>
+                            {checked && (
+                              <span style={{ fontSize: "0.65rem", color: T.muted, whiteSpace: "nowrap" }}>
+                                {formatTimestamp(map[chore.id])}
+                              </span>
+                            )}
                           </button>
                         );
                       })}
                     </div>
+
+                    {sideQuests.some((q) => q.claimedBy === boy.id) && (
+                      <div className="space-y-2 mb-4">
+                        <div style={{ fontSize: "0.65rem", color: T.muted, fontWeight: 700 }}>SIDE QUESTS</div>
+                        {sideQuests
+                          .filter((q) => q.claimedBy === boy.id)
+                          .map((q) => (
+                            <div
+                              key={q.id}
+                              className="w-full flex items-center gap-3 px-3 py-2"
+                              style={pixelBorder("rgba(232,196,67,0.10)", T.gold, T.goldDark, 2)}
+                            >
+                              <button
+                                onClick={() => completeSideQuest(q)}
+                                aria-label="Mark side quest done"
+                                style={{
+                                  width: 20,
+                                  height: 20,
+                                  flexShrink: 0,
+                                  background: T.stone,
+                                  border: `2px solid ${T.gold}`,
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                }}
+                              >
+                                <Check size={13} color={T.gold} strokeWidth={3} />
+                              </button>
+                              <span style={{ fontSize: "0.88rem", fontWeight: 600, flex: 1 }}>{q.label}</span>
+                              <span
+                                className="flex items-center gap-1"
+                                style={{ color: T.gold, fontWeight: 800, fontSize: "0.8rem" }}
+                              >
+                                <Gem size={12} />
+                                {q.value.toFixed(2)}
+                              </span>
+                              <button onClick={() => releaseSideQuest(q.id)} aria-label="Unclaim side quest">
+                                <X size={14} color={T.muted} />
+                              </button>
+                            </div>
+                          ))}
+                      </div>
+                    )}
 
                     {allDone && (
                       <div
@@ -602,6 +711,117 @@ export default function ChoreDashboard() {
                   </div>
                 );
               })}
+            </div>
+
+            <div className="p-4 mb-6" style={pixelBorder(T.stone, T.stoneLight, T.stoneDark)}>
+              <div style={{ ...pixelText(), fontSize: "1rem" }} className="mb-3">
+                Available Side Quests
+              </div>
+              {sideQuests.filter((q) => !q.claimedBy).length === 0 ? (
+                <div style={{ color: T.muted, fontSize: "0.85rem" }} className="mb-3">
+                  No side quests waiting to be claimed.
+                </div>
+              ) : (
+                <div className="space-y-2 mb-3">
+                  {sideQuests
+                    .filter((q) => !q.claimedBy)
+                    .map((q) => (
+                      <div
+                        key={q.id}
+                        className="flex items-center justify-between px-3 py-2 flex-wrap gap-2"
+                        style={pixelBorder(T.stoneDark, T.stoneLight, "#222220", 2)}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span style={{ fontSize: "0.88rem", fontWeight: 600 }}>{q.label}</span>
+                          <span
+                            className="flex items-center gap-1"
+                            style={{ color: T.gold, fontWeight: 800, fontSize: "0.8rem" }}
+                          >
+                            <Gem size={12} />
+                            {q.value.toFixed(2)}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {boys.map((b) => (
+                            <button
+                              key={b.id}
+                              onClick={() => claimSideQuest(q.id, b.id)}
+                              className="px-2 py-1 text-xs"
+                              style={{
+                                ...pixelBorder(b.accent, T.cream, b.accentDark, 2),
+                                color: T.stoneDark,
+                                fontWeight: 800,
+                              }}
+                            >
+                              CLAIM: {b.name.toUpperCase()}
+                            </button>
+                          ))}
+                          <button onClick={() => removeSideQuest(q.id)} aria-label="Delete side quest">
+                            <Trash2 size={14} color={T.redstone} />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              )}
+
+              {showSideQuestForm ? (
+                <div className="space-y-2">
+                  <div className="flex gap-2">
+                    <input
+                      value={newQuestLabel}
+                      onChange={(e) => setNewQuestLabel(e.target.value)}
+                      placeholder="Task name"
+                      className="flex-1 px-2 py-1 text-sm"
+                      style={{ background: T.stoneDark, border: `2px solid ${T.stoneLight}`, color: T.cream }}
+                    />
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={newQuestValue}
+                      onChange={(e) => setNewQuestValue(e.target.value)}
+                      placeholder="$ value"
+                      className="w-24 px-2 py-1 text-sm"
+                      style={{ background: T.stoneDark, border: `2px solid ${T.stoneLight}`, color: T.cream }}
+                    />
+                  </div>
+                  <div className="flex gap-2 justify-end">
+                    <button
+                      onClick={() => {
+                        setShowSideQuestForm(false);
+                        setNewQuestLabel("");
+                        setNewQuestValue("");
+                      }}
+                      className="px-2 py-1 text-xs"
+                      style={{ color: T.muted }}
+                    >
+                      CANCEL
+                    </button>
+                    <button
+                      onClick={addSideQuest}
+                      disabled={!newQuestLabel.trim() || !newQuestValue}
+                      className="px-3 py-1 flex items-center gap-1 text-xs"
+                      style={{
+                        ...pixelBorder(T.gold, T.cream, T.goldDark, 2),
+                        color: T.stoneDark,
+                        fontWeight: 800,
+                        opacity: !newQuestLabel.trim() || !newQuestValue ? 0.5 : 1,
+                      }}
+                    >
+                      <Plus size={12} /> CREATE
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setShowSideQuestForm(true)}
+                  className="flex items-center gap-2 text-xs"
+                  style={{ color: T.muted, fontWeight: 700 }}
+                >
+                  <Plus size={13} />
+                  ADD SIDE QUEST
+                </button>
+              )}
             </div>
 
             <div className="p-4" style={pixelBorder(T.stone, T.stoneLight, T.stoneDark)}>
