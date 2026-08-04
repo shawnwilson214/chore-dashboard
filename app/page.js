@@ -53,11 +53,31 @@ const DEFAULT_BOYS = [
   { id: "b2", name: "Kyle", accent: T.diamond, accentDark: T.diamondDark },
 ];
 
+// Default matches: home every week Tue–Thu, and every other week that
+// block extends through Sunday (Tue–Sun). "Extended" weeks are the ones
+// with the Thu–Sun stretch; "regular" weeks are just Tue–Thu.
+const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const DEFAULT_SCHEDULE = {
+  anchorDate: todayKeyPlaceholder(), // a date known to fall in an "extended" week
+  regularDays: [2, 3, 4], // Tue, Wed, Thu
+  extendedDays: [2, 3, 4, 5, 6, 0], // Tue, Wed, Thu, Fri, Sat, Sun
+};
+const DEFAULT_STREAK_SETTINGS = { length: 3, bonus: 3 };
+
+function todayKeyPlaceholder() {
+  // resolved at module load; fine since this only seeds the default
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 const STORAGE_KEY = "chore-dashboard-data";
 const DAILY_BONUS = 2;
 
 function dateKey(d) {
-  return d.toISOString().slice(0, 10);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 function prettyDate(key) {
   const d = new Date(key + "T00:00:00");
@@ -84,6 +104,23 @@ function formatTimestamp(iso) {
     minute: "2-digit",
   });
 }
+function getWeekStart(d) {
+  const start = new Date(d);
+  start.setDate(d.getDate() - d.getDay());
+  start.setHours(0, 0, 0, 0);
+  return start;
+}
+// Is the given date one of the boys' scheduled days at this house?
+function isEligibleDay(dateStr, schedule) {
+  if (!schedule || !schedule.anchorDate) return true;
+  const d = new Date(dateStr + "T00:00:00");
+  const dow = d.getDay();
+  const anchor = new Date(schedule.anchorDate + "T00:00:00");
+  const weeksDiff = Math.round((getWeekStart(d) - getWeekStart(anchor)) / (7 * 24 * 3600 * 1000));
+  const isExtendedWeek = (((weeksDiff % 2) + 2) % 2) === 0;
+  const activeDays = isExtendedWeek ? schedule.extendedDays : schedule.regularDays;
+  return activeDays.includes(dow);
+}
 
 export default function ChoreDashboard() {
   const [loaded, setLoaded] = useState(false);
@@ -108,6 +145,9 @@ export default function ChoreDashboard() {
   const [showSideQuestForm, setShowSideQuestForm] = useState(false);
   const [newQuestLabel, setNewQuestLabel] = useState("");
   const [newQuestValue, setNewQuestValue] = useState("");
+  const [schedule, setSchedule] = useState(DEFAULT_SCHEDULE);
+  const [streakSettings, setStreakSettings] = useState(DEFAULT_STREAK_SETTINGS);
+  const [showScheduleEditor, setShowScheduleEditor] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -121,6 +161,8 @@ export default function ChoreDashboard() {
             setCompletions(data.completions || {});
             setLedger(data.ledger || []);
             setSideQuests(data.sideQuests || []);
+            setSchedule(data.schedule || DEFAULT_SCHEDULE);
+            setStreakSettings(data.streakSettings || DEFAULT_STREAK_SETTINGS);
           }
         }
       } catch (e) {
@@ -156,15 +198,19 @@ export default function ChoreDashboard() {
         completions: patch.completions ?? completions,
         ledger: patch.ledger ?? ledger,
         sideQuests: patch.sideQuests ?? sideQuests,
+        schedule: patch.schedule ?? schedule,
+        streakSettings: patch.streakSettings ?? streakSettings,
       };
       if (patch.boys) setBoys(patch.boys);
       if (patch.chores) setChores(patch.chores);
       if (patch.completions) setCompletions(patch.completions);
       if (patch.ledger) setLedger(patch.ledger);
       if (patch.sideQuests) setSideQuests(patch.sideQuests);
+      if (patch.schedule) setSchedule(patch.schedule);
+      if (patch.streakSettings) setStreakSettings(patch.streakSettings);
       persist(next);
     },
-    [boys, chores, completions, ledger, sideQuests, persist]
+    [boys, chores, completions, ledger, sideQuests, schedule, streakSettings, persist]
   );
 
   const balances = useMemo(() => {
@@ -193,8 +239,88 @@ export default function ChoreDashboard() {
     return map;
   }, [boys, ledger]);
 
+  // Each boy's current streak of consecutive home days with all chores done,
+  // as of today (ineligible/non-home days are skipped, not counted as breaks).
+  const currentStreaks = useMemo(() => {
+    const map = {};
+    for (const b of boys) {
+      map[b.id] = computeStreak(b.id, todayKey(), completions);
+    }
+    return map;
+  }, [boys, completions, chores, schedule]);
+
   function getCompletionMap(dKey, boyId) {
     return completions[`${dKey}|${boyId}`] || {};
+  }
+
+  function isDayComplete(boyId, dateStr, completionsMap) {
+    const map = completionsMap[`${dateStr}|${boyId}`] || {};
+    return chores.length > 0 && chores.every((c) => !!map[c.id]);
+  }
+
+  // Walk backward from a date, counting consecutive *eligible* (home) days
+  // with every chore done. Days the boys aren't scheduled to be here are
+  // skipped over — they neither add to nor break the streak.
+  function computeStreak(boyId, uptoDateStr, completionsMap) {
+    let count = 0;
+    let d = uptoDateStr;
+    let guard = 0;
+    while (guard < 400) {
+      guard++;
+      if (isEligibleDay(d, schedule)) {
+        if (isDayComplete(boyId, d, completionsMap)) {
+          count++;
+        } else {
+          break;
+        }
+      }
+      d = addDays(d, -1);
+    }
+    return count;
+  }
+
+  // Re-checks every day from `fromDateStr` through `toDateStr` (inclusive) for
+  // this boy, adding or removing streak-bonus ledger entries as needed. This
+  // is what makes editing a past day ripple forward correctly — a broken
+  // streak un-awards every bonus that depended on it, and a repaired one
+  // re-awards them.
+  function recalcStreakBonuses(boyId, fromDateStr, toDateStr, completionsMap, ledgerArr) {
+    let result = ledgerArr;
+    let d = fromDateStr;
+    let guard = 0;
+    while (d <= toDateStr && guard < 730) {
+      guard++;
+      if (isEligibleDay(d, schedule)) {
+        const dayComplete = isDayComplete(boyId, d, completionsMap);
+        const streakCount = dayComplete ? computeStreak(boyId, d, completionsMap) : 0;
+        const existing = result.find((e) => e.tag === "streak" && e.date === d && e.boyId === boyId);
+        const qualifies =
+          dayComplete && streakSettings.length > 0 && streakCount > 0 && streakCount % streakSettings.length === 0;
+        if (qualifies && !existing) {
+          result = [
+            ...result,
+            {
+              id: uid(),
+              date: d,
+              boyId,
+              amount: streakSettings.bonus,
+              reason: `🔥 ${streakCount}-day streak bonus`,
+              tag: "streak",
+              timestamp: new Date().toISOString(),
+            },
+          ];
+        } else if (!qualifies && existing) {
+          result = result.filter((e) => e.id !== existing.id);
+        } else if (qualifies && existing && existing.amount !== streakSettings.bonus) {
+          // bonus amount was changed in settings after this entry was made — keep it in sync
+          result = result.map((e) =>
+            e.id === existing.id ? { ...e, amount: streakSettings.bonus, reason: `🔥 ${streakCount}-day streak bonus` } : e
+          );
+        }
+      }
+      d = addDays(d, 1);
+    }
+    return result;
   }
 
   function toggleChore(boyId, choreId) {
@@ -226,6 +352,10 @@ export default function ChoreDashboard() {
     } else if (!allDone && existingBonus) {
       nextLedger = ledger.filter((e) => e.id !== existingBonus.id);
     }
+
+    // Recalculate streak bonuses forward from the edited day through today,
+    // so changing an old day correctly continues or breaks everything after it.
+    nextLedger = recalcStreakBonuses(boyId, selectedDate, todayKey(), nextCompletions, nextLedger);
 
     saveAll({ completions: nextCompletions, ledger: nextLedger });
   }
@@ -428,6 +558,16 @@ export default function ChoreDashboard() {
                 style={{ ...pixelBorder(T.dirt, T.stoneLight, T.dirtDark), minWidth: 190 }}
               >
                 <div style={{ fontSize: "0.9rem", fontWeight: 700 }}>{prettyDate(selectedDate)}</div>
+                <div
+                  style={{
+                    fontSize: "0.62rem",
+                    fontWeight: 700,
+                    color: isEligibleDay(selectedDate, schedule) ? T.emerald : T.muted,
+                    marginTop: 2,
+                  }}
+                >
+                  {isEligibleDay(selectedDate, schedule) ? "● HOME DAY" : "○ not scheduled"}
+                </div>
                 {!isToday && (
                   <button
                     onClick={() => setSelectedDate(todayKey())}
@@ -509,6 +649,25 @@ export default function ChoreDashboard() {
                         {doneCount}/{chores.length}
                       </div>
                     </div>
+
+                    {streakSettings.length > 0 && (
+                      <div
+                        className="flex items-center justify-between px-3 py-1.5 mb-3"
+                        style={{
+                          background: "rgba(232,196,67,0.08)",
+                          border: `2px solid ${T.goldDark}`,
+                          fontSize: "0.72rem",
+                        }}
+                      >
+                        <span style={{ color: T.gold, fontWeight: 800 }}>
+                          🔥 {currentStreaks[boy.id] || 0}-day streak
+                        </span>
+                        <span style={{ color: T.muted }}>
+                          {streakSettings.length - ((currentStreaks[boy.id] || 0) % streakSettings.length)} to go for +
+                          {streakSettings.bonus}
+                        </span>
+                      </div>
+                    )}
 
                     <div className="space-y-2 mb-4">
                       {chores.map((chore) => {
@@ -859,6 +1018,143 @@ export default function ChoreDashboard() {
                     >
                       <Plus size={14} /> ADD
                     </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="p-4 mt-4" style={pixelBorder(T.stone, T.stoneLight, T.stoneDark)}>
+              <button
+                onClick={() => setShowScheduleEditor((s) => !s)}
+                className="flex items-center gap-2 text-xs"
+                style={{ color: T.muted, fontWeight: 700 }}
+              >
+                <Pencil size={13} />
+                {showScheduleEditor ? "DONE EDITING SCHEDULE & STREAKS" : "EDIT HOME SCHEDULE & STREAKS"}
+              </button>
+              {showScheduleEditor && (
+                <div className="mt-3 space-y-4">
+                  <div>
+                    <div style={{ fontSize: "0.72rem", color: T.muted, fontWeight: 700 }} className="mb-1">
+                      STREAK BONUS
+                    </div>
+                    <div className="flex items-center gap-2 text-sm">
+                      <span>Every</span>
+                      <input
+                        type="number"
+                        min="1"
+                        value={streakSettings.length}
+                        onChange={(e) =>
+                          saveAll({
+                            streakSettings: { ...streakSettings, length: Number(e.target.value) || 1 },
+                          })
+                        }
+                        className="w-14 px-2 py-1 text-sm text-center"
+                        style={{ background: T.stoneDark, border: `2px solid ${T.stoneLight}`, color: T.cream }}
+                      />
+                      <span>consecutive home days completed, award</span>
+                      <span style={{ color: T.gold }}>$</span>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        value={streakSettings.bonus}
+                        onChange={(e) =>
+                          saveAll({
+                            streakSettings: { ...streakSettings, bonus: Number(e.target.value) || 0 },
+                          })
+                        }
+                        className="w-16 px-2 py-1 text-sm text-center"
+                        style={{ background: T.stoneDark, border: `2px solid ${T.stoneLight}`, color: T.cream }}
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <div style={{ fontSize: "0.72rem", color: T.muted, fontWeight: 700 }} className="mb-1">
+                      REGULAR WEEK HOME DAYS
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {DAY_NAMES.map((name, i) => {
+                        const active = schedule.regularDays.includes(i);
+                        return (
+                          <button
+                            key={i}
+                            onClick={() => {
+                              const next = active
+                                ? schedule.regularDays.filter((d) => d !== i)
+                                : [...schedule.regularDays, i].sort();
+                              saveAll({ schedule: { ...schedule, regularDays: next } });
+                            }}
+                            className="px-2 py-1 text-xs"
+                            style={{
+                              ...pixelBorder(
+                                active ? boys[0]?.accent || T.gold : T.stoneDark,
+                                active ? T.cream : T.stoneLight,
+                                active ? T.goldDark : "#222220",
+                                2
+                              ),
+                              color: active ? T.stoneDark : T.muted,
+                              fontWeight: 700,
+                            }}
+                          >
+                            {name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div style={{ fontSize: "0.72rem", color: T.muted, fontWeight: 700 }} className="mb-1">
+                      EXTENDED WEEK HOME DAYS (every other week)
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {DAY_NAMES.map((name, i) => {
+                        const active = schedule.extendedDays.includes(i);
+                        return (
+                          <button
+                            key={i}
+                            onClick={() => {
+                              const next = active
+                                ? schedule.extendedDays.filter((d) => d !== i)
+                                : [...schedule.extendedDays, i].sort();
+                              saveAll({ schedule: { ...schedule, extendedDays: next } });
+                            }}
+                            className="px-2 py-1 text-xs"
+                            style={{
+                              ...pixelBorder(
+                                active ? T.diamond : T.stoneDark,
+                                active ? T.cream : T.stoneLight,
+                                active ? T.diamondDark : "#222220",
+                                2
+                              ),
+                              color: active ? T.stoneDark : T.muted,
+                              fontWeight: 700,
+                            }}
+                          >
+                            {name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div style={{ fontSize: "0.72rem", color: T.muted, fontWeight: 700 }} className="mb-1">
+                      SYNC POINT
+                    </div>
+                    <div style={{ fontSize: "0.72rem", color: T.muted }} className="mb-1.5">
+                      Pick any date that falls in an extended (Thu–Sun) week — this tells the app which weeks are
+                      which.
+                    </div>
+                    <input
+                      type="date"
+                      value={schedule.anchorDate}
+                      onChange={(e) => saveAll({ schedule: { ...schedule, anchorDate: e.target.value } })}
+                      className="px-2 py-1 text-sm"
+                      style={{ background: T.stoneDark, border: `2px solid ${T.stoneLight}`, color: T.cream }}
+                    />
                   </div>
                 </div>
               )}
