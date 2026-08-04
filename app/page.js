@@ -663,8 +663,7 @@ export default function ChoreDashboard() {
                           🔥 {currentStreaks[boy.id] || 0}-day streak
                         </span>
                         <span style={{ color: T.muted }}>
-                          {streakSettings.length - ((currentStreaks[boy.id] || 0) % streakSettings.length)} to go for +
-                          {streakSettings.bonus}
+                          {streakSettings.length}-day streak = +{streakSettings.bonus}
                         </span>
                       </div>
                     )}
