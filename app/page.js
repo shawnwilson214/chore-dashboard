@@ -239,12 +239,17 @@ export default function ChoreDashboard() {
     return map;
   }, [boys, ledger]);
 
-  // Each boy's current streak of consecutive home days with all chores done,
-  // as of today (ineligible/non-home days are skipped, not counted as breaks).
+  // Each boy's current streak of consecutive home days with all chores done.
+  // If today is a home day but isn't finished yet, we show the streak as of
+  // yesterday (still "alive," just not extended yet) instead of showing 0 —
+  // today only counts once it's actually complete.
   const currentStreaks = useMemo(() => {
     const map = {};
+    const t = todayKey();
     for (const b of boys) {
-      map[b.id] = computeStreak(b.id, todayKey(), completions);
+      const todayInProgress = isEligibleDay(t, schedule) && !isDayComplete(b.id, t, completions);
+      const effectiveDate = todayInProgress ? addDays(t, -1) : t;
+      map[b.id] = computeStreak(b.id, effectiveDate, completions);
     }
     return map;
   }, [boys, completions, chores, schedule]);
