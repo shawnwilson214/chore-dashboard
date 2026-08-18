@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Check, ChevronLeft, ChevronRight, Gem, Receipt, Pencil, Plus, X, Hammer, Box, Trash2, Save } from "lucide-react";
 
 // ---- Design tokens: blocky / pixel-art, inspired by sandbox-mining games ----
@@ -148,6 +148,22 @@ export default function ChoreDashboard() {
   const [schedule, setSchedule] = useState(DEFAULT_SCHEDULE);
   const [streakSettings, setStreakSettings] = useState(DEFAULT_STREAK_SETTINGS);
   const [showScheduleEditor, setShowScheduleEditor] = useState(false);
+  const lastKnownToday = useRef(todayKey());
+
+  // Wall tablets stay open for days at a time, so relying on a page reload
+  // to notice a new day isn't enough. Poll every 30s — if the calendar date
+  // has rolled over AND the person was looking at "today" (not browsing an
+  // older day on purpose), slide the view forward automatically.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const nowKey = todayKey();
+      if (nowKey !== lastKnownToday.current) {
+        setSelectedDate((prev) => (prev === lastKnownToday.current ? nowKey : prev));
+        lastKnownToday.current = nowKey;
+      }
+    }, 30000);
+    return () => clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     (async () => {
